@@ -86,7 +86,7 @@ async function viewCloudflare(el) {
     ${statCard('Port terpetakan',ports.length,'Pool 3100–3999','server','warn')}
   </div>
   ${!d.configured?`<div class="alert-strip mb-16">${icon('info')}<div><b>Integrasi Cloudflare belum aktif.</b> Hostname dan pemetaan tetap dapat dilihat. Isi API Token, Zone ID, dan Tunnel ID untuk sinkronisasi DNS. Panel tidak akan menulis konfigurasi cloudflared tanpa tombol Terapkan.</div></div>`:''}
-  <div class="stack-md mb-16"><section class="card"><div class="card-head"><div><h3>${icon('settings')}Konfigurasi</h3><div class="hint">API Token butuh izin Zone:DNS:Edit dan Account:Cloudflare Tunnel:Edit.</div></div></div><form id="cf-form" class="card-body"><div class="form-grid">
+  <div class="stack-md mb-16"><section class="card"><div class="card-head"><div><h3>${icon('settings')}Konfigurasi</h3><div class="hint">API Token butuh izin Zone:DNS:Edit, Zone:Zone:Read (agar zona lain di akun yang sama ditemukan otomatis), dan Account:Cloudflare Tunnel:Edit.</div></div></div><form id="cf-form" class="card-body"><div class="form-grid">
     ${field('API Token','<input class="input" type="password" name="apiToken" placeholder="'+(d.configured?'•••• tersimpan':'token API')+'">','Biarkan kosong dan pertahankan untuk memakai token lama.',true)}
     ${field('','<label class="check-row"><input type="checkbox" name="keepToken" checked><span class="small">Pertahankan token tersimpan</span></label>','',false)}
     ${field('Zone ID','<input class="input mono" name="zoneId" value="'+attr(d.zoneId||'')+'">')}

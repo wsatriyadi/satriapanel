@@ -646,9 +646,39 @@ type cfDNSRecord struct {
 	Proxied bool   `json:"proxied"`
 }
 
-func (p *Panel) cfFindDNSRecord(ctx context.Context, c cloudflareCredentials, hostname string) (*cfDNSRecord, error) {
+type cfZone struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// cfZoneForHostname menentukan zona Cloudflare yang menaungi hostname: zona yang
+// dikonfigurasi panel dipakai bila hostname berada di bawahnya; selain itu zona
+// dicari dari daftar zona akun (token perlu izin Zone:Read untuk pencarian ini).
+func (p *Panel) cfZoneForHostname(ctx context.Context, c cloudflareCredentials, hostname string) (string, error) {
+	if c.ZoneID != "" && c.ZoneName != "" && (hostname == c.ZoneName || strings.HasSuffix(hostname, "."+c.ZoneName)) {
+		return c.ZoneID, nil
+	}
+	var zones []cfZone
+	if err := cfAPI(ctx, c.APIToken, http.MethodGet, "/zones?per_page=50", nil, &zones); err != nil {
+		return "", fmt.Errorf("gagal membaca daftar zona (token perlu izin Zone:Zone:Read): %v", err)
+	}
+	best, bestLen := "", -1
+	for _, z := range zones {
+		if hostname == z.Name || strings.HasSuffix(hostname, "."+z.Name) {
+			if len(z.Name) > bestLen {
+				best, bestLen = z.ID, len(z.Name)
+			}
+		}
+	}
+	if best == "" {
+		return "", fmt.Errorf("tidak ada zona Cloudflare untuk %s pada akun token ini", hostname)
+	}
+	return best, nil
+}
+
+func (p *Panel) cfFindDNSRecord(ctx context.Context, c cloudflareCredentials, zoneID, hostname string) (*cfDNSRecord, error) {
 	var out []cfDNSRecord
-	q := "/zones/" + c.ZoneID + "/dns_records?type=CNAME&name=" + url.QueryEscape(hostname)
+	q := "/zones/" + zoneID + "/dns_records?type=CNAME&name=" + url.QueryEscape(hostname)
 	if err := cfAPI(ctx, c.APIToken, http.MethodGet, q, nil, &out); err != nil {
 		return nil, err
 	}
@@ -658,12 +688,12 @@ func (p *Panel) cfFindDNSRecord(ctx context.Context, c cloudflareCredentials, ho
 	return &out[0], nil
 }
 
-// cfEnsureDNSName memastikan CNAME hostname -> <tunnel>.cfargotunnel.com (proxied) ada:
-// dicari dulu menurut nama (record buatan manual pun diadopsi), diperbarui bila isinya
-// berbeda, dibuat bila belum ada. Mengembalikan ID record.
-func (p *Panel) cfEnsureDNSName(ctx context.Context, c cloudflareCredentials, hostname string) (string, error) {
+// cfEnsureDNSName memastikan CNAME hostname -> <tunnel>.cfargotunnel.com (proxied) ada
+// di zona yang diberikan: dicari dulu menurut nama (record buatan manual pun diadopsi),
+// diperbarui bila isinya berbeda, dibuat bila belum ada. Mengembalikan ID record.
+func (p *Panel) cfEnsureDNSName(ctx context.Context, c cloudflareCredentials, zoneID, hostname string) (string, error) {
 	target := c.TunnelID + ".cfargotunnel.com"
-	rec, err := p.cfFindDNSRecord(ctx, c, hostname)
+	rec, err := p.cfFindDNSRecord(ctx, c, zoneID, hostname)
 	if err != nil {
 		return "", err
 	}
@@ -672,7 +702,7 @@ func (p *Panel) cfEnsureDNSName(ctx context.Context, c cloudflareCredentials, ho
 			var out struct {
 				ID string `json:"id"`
 			}
-			if err := cfAPI(ctx, c.APIToken, http.MethodPut, "/zones/"+c.ZoneID+"/dns_records/"+rec.ID,
+			if err := cfAPI(ctx, c.APIToken, http.MethodPut, "/zones/"+zoneID+"/dns_records/"+rec.ID,
 				map[string]any{"type": "CNAME", "name": hostname, "content": target, "proxied": true, "ttl": 1}, &out); err != nil {
 				return "", err
 			}
@@ -682,7 +712,7 @@ func (p *Panel) cfEnsureDNSName(ctx context.Context, c cloudflareCredentials, ho
 	var out struct {
 		ID string `json:"id"`
 	}
-	if err := cfAPI(ctx, c.APIToken, http.MethodPost, "/zones/"+c.ZoneID+"/dns_records",
+	if err := cfAPI(ctx, c.APIToken, http.MethodPost, "/zones/"+zoneID+"/dns_records",
 		map[string]any{"type": "CNAME", "name": hostname, "content": target, "proxied": true, "ttl": 1}, &out); err != nil {
 		return "", err
 	}
@@ -691,7 +721,11 @@ func (p *Panel) cfEnsureDNSName(ctx context.Context, c cloudflareCredentials, ho
 
 func (p *Panel) cfEnsurePanelDNS(ctx context.Context, c cloudflareCredentials) error {
 	hostname := p.setting("panel_hostname", "panel.satriyadi.com")
-	id, err := p.cfEnsureDNSName(ctx, c, hostname)
+	zoneID, err := p.cfZoneForHostname(ctx, c, hostname)
+	if err != nil {
+		return err
+	}
+	id, err := p.cfEnsureDNSName(ctx, c, zoneID, hostname)
 	if err != nil {
 		return err
 	}
@@ -705,15 +739,29 @@ func (p *Panel) cfEnsurePanelDNS(ctx context.Context, c cloudflareCredentials) e
 // sudah tidak dipakai panel, agar DNS tetap cerminan konfigurasi tunnel.
 func (p *Panel) cfCleanupDNS(ctx context.Context, c cloudflareCredentials, desired map[string]bool) (int, error) {
 	target := c.TunnelID + ".cfargotunnel.com"
-	var out []cfDNSRecord
-	if err := cfAPI(ctx, c.APIToken, http.MethodGet, "/zones/"+c.ZoneID+"/dns_records?type=CNAME&per_page=100", nil, &out); err != nil {
-		return 0, err
+	zoneIDs := []string{}
+	if c.ZoneID != "" {
+		zoneIDs = append(zoneIDs, c.ZoneID)
+	}
+	var zones []cfZone
+	if err := cfAPI(ctx, c.APIToken, http.MethodGet, "/zones?per_page=50", nil, &zones); err == nil {
+		for _, z := range zones {
+			if z.ID != c.ZoneID {
+				zoneIDs = append(zoneIDs, z.ID)
+			}
+		}
 	}
 	removed := 0
-	for _, rec := range out {
-		if rec.Content == target && !desired[rec.Name] {
-			if err := cfAPI(ctx, c.APIToken, http.MethodDelete, "/zones/"+c.ZoneID+"/dns_records/"+rec.ID, nil, nil); err == nil {
-				removed++
+	for _, zid := range zoneIDs {
+		var out []cfDNSRecord
+		if err := cfAPI(ctx, c.APIToken, http.MethodGet, "/zones/"+zid+"/dns_records?type=CNAME&per_page=100", nil, &out); err != nil {
+			continue
+		}
+		for _, rec := range out {
+			if rec.Content == target && !desired[rec.Name] {
+				if err := cfAPI(ctx, c.APIToken, http.MethodDelete, "/zones/"+zid+"/dns_records/"+rec.ID, nil, nil); err == nil {
+					removed++
+				}
 			}
 		}
 	}
@@ -836,12 +884,16 @@ func (p *Panel) handleCloudflareApply(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Panel) cfEnsureDNS(app *App, c cloudflareCredentials) error {
-	if c.ZoneID == "" || c.TunnelID == "" || app.Hostname == "" {
+	if c.TunnelID == "" || app.Hostname == "" {
 		return fmt.Errorf("konfigurasi Cloudflare belum lengkap")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	id, err := p.cfEnsureDNSName(ctx, c, app.Hostname)
+	zoneID, err := p.cfZoneForHostname(ctx, c, app.Hostname)
+	if err != nil {
+		return err
+	}
+	id, err := p.cfEnsureDNSName(ctx, c, zoneID, app.Hostname)
 	if err != nil {
 		return err
 	}
@@ -863,9 +915,15 @@ func (p *Panel) syncAppIngress(appID int64, oldHostname string) {
 			p.logf("sinkronisasi DNS %s: %v", app.Hostname, err)
 		}
 	}
-	if oldHostname != "" && oldHostname != app.Hostname && oldRecordID != "" && c.APIToken != "" && c.ZoneID != "" {
+	if oldHostname != "" && oldHostname != app.Hostname && oldRecordID != "" && c.APIToken != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		_ = cfAPI(ctx, c.APIToken, http.MethodDelete, "/zones/"+c.ZoneID+"/dns_records/"+oldRecordID, nil, nil)
+		zoneID, zerr := p.cfZoneForHostname(ctx, c, oldHostname)
+		if zerr != nil {
+			zoneID = c.ZoneID
+		}
+		if zoneID != "" {
+			_ = cfAPI(ctx, c.APIToken, http.MethodDelete, "/zones/"+zoneID+"/dns_records/"+oldRecordID, nil, nil)
+		}
 		cancel()
 	}
 	// Dengan sinkronisasi otomatis aktif, perubahan hostname langsung diterapkan
@@ -883,9 +941,15 @@ func (p *Panel) syncAppIngress(appID int64, oldHostname string) {
 
 func (p *Panel) removeAppIngress(app App) {
 	c := p.cfCreds()
-	if app.DNSRecordID != "" && c.APIToken != "" && c.ZoneID != "" {
+	if app.DNSRecordID != "" && c.APIToken != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		_ = cfAPI(ctx, c.APIToken, http.MethodDelete, "/zones/"+c.ZoneID+"/dns_records/"+app.DNSRecordID, nil, nil)
+		zoneID, zerr := p.cfZoneForHostname(ctx, c, app.Hostname)
+		if zerr != nil {
+			zoneID = c.ZoneID
+		}
+		if zoneID != "" {
+			_ = cfAPI(ctx, c.APIToken, http.MethodDelete, "/zones/"+zoneID+"/dns_records/"+app.DNSRecordID, nil, nil)
+		}
 		cancel()
 	}
 	if app.Hostname == "" {
