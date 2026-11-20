@@ -1,0 +1,28 @@
+[Unit]
+Description=SatriaPanel — panel deploy home server
+Documentation=https://github.com/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=satriapanel
+Group=satriapanel
+WorkingDirectory=/opt/satriapanel
+ExecStart=/opt/satriapanel/satriapanel -data /var/lib/satriapanel -addr 127.0.0.1:8282
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+KillMode=mixed
+Environment=TZ=Asia/Jakarta
+LimitNOFILE=65536
+# Panel menjalankan aplikasi pengguna. Batasi akses filesystem sesuai kebutuhan.
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=-/var/lib/satriapanel -/etc/cloudflared
+# Catatan: driver systemd dan penulisan /etc/systemd memerlukan izin tambahan.
+# Untuk produksi, jalankan panel sebagai user khusus dan berikan sudo terbatas,
+# atau gunakan driver PM2/direct untuk aplikasi native.
+
+[Install]
+WantedBy=multi-user.target

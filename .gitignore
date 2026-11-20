@@ -1,0 +1,28 @@
+# binary
+satriapanel
+satriapanel.exe
+satriapanel-linux-*
+*.exe
+
+# development data
+data/
+data-dev/
+data-*/
+*.db
+*.db-shm
+*.db-wal
+secret.key
+
+# artifacts
+*.log
+run-out.log
+run-err.log
+dashboard*.png
+shot-*.png
+*.zip
+node_modules/
+.playwright-mcp/
+
+# OS
+.DS_Store
+Thumbs.db
