@@ -603,6 +603,123 @@ func (p *Panel) handleCloudflareTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": verify.Status, "tunnel": tunnel})
 }
 
+// ---------- Cloudflare: konfigurasi tunnel & DNS lewat API ----------
+
+type cfIngressRule struct {
+	Hostname string `json:"hostname,omitempty"`
+	Service  string `json:"service"`
+}
+
+// cfIngressRules menyusun aturan ingress dari keadaan panel saat ini:
+// hostname panel lebih dulu, lalu setiap hostname aplikasi (unik), diakhiri penangkap 404.
+func (p *Panel) cfIngressRules(apps []*App) []cfIngressRule {
+	rules := []cfIngressRule{{Hostname: p.setting("panel_hostname", "panel.satriyadi.com"), Service: fmt.Sprintf("http://127.0.0.1:%d", p.intSetting("panel_port", 8282))}}
+	seen := map[string]bool{rules[0].Hostname: true}
+	for _, a := range apps {
+		if a.Hostname == "" || seen[a.Hostname] {
+			continue
+		}
+		seen[a.Hostname] = true
+		rules = append(rules, cfIngressRule{Hostname: a.Hostname, Service: fmt.Sprintf("http://127.0.0.1:%d", a.Port)})
+	}
+	return append(rules, cfIngressRule{Service: "http_status:404"})
+}
+
+// cfPushTunnelConfig menerapkan konfigurasi ingress ke tunnel Cloudflare lewat API
+// (PUT configurations). Tunnel mode remote/token mengambil konfigurasi baru ini
+// secara otomatis dalam hitungan detik — tidak perlu restart/reload cloudflared.
+func (p *Panel) cfPushTunnelConfig(ctx context.Context, c cloudflareCredentials, apps []*App) error {
+	if c.APIToken == "" || c.AccountID == "" || c.TunnelID == "" {
+		return fmt.Errorf("Token, Account ID, dan Tunnel ID Cloudflare wajib lengkap")
+	}
+	body := map[string]any{"config": map[string]any{
+		"ingress":      p.cfIngressRules(apps),
+		"warp-routing": map[string]any{"enabled": false},
+	}}
+	return cfAPI(ctx, c.APIToken, http.MethodPut, "/accounts/"+c.AccountID+"/cfd_tunnel/"+c.TunnelID+"/configurations", body, nil)
+}
+
+type cfDNSRecord struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Content string `json:"content"`
+	Proxied bool   `json:"proxied"`
+}
+
+func (p *Panel) cfFindDNSRecord(ctx context.Context, c cloudflareCredentials, hostname string) (*cfDNSRecord, error) {
+	var out []cfDNSRecord
+	q := "/zones/" + c.ZoneID + "/dns_records?type=CNAME&name=" + url.QueryEscape(hostname)
+	if err := cfAPI(ctx, c.APIToken, http.MethodGet, q, nil, &out); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return &out[0], nil
+}
+
+// cfEnsureDNSName memastikan CNAME hostname -> <tunnel>.cfargotunnel.com (proxied) ada:
+// dicari dulu menurut nama (record buatan manual pun diadopsi), diperbarui bila isinya
+// berbeda, dibuat bila belum ada. Mengembalikan ID record.
+func (p *Panel) cfEnsureDNSName(ctx context.Context, c cloudflareCredentials, hostname string) (string, error) {
+	target := c.TunnelID + ".cfargotunnel.com"
+	rec, err := p.cfFindDNSRecord(ctx, c, hostname)
+	if err != nil {
+		return "", err
+	}
+	if rec != nil {
+		if rec.Content != target || !rec.Proxied {
+			var out struct {
+				ID string `json:"id"`
+			}
+			if err := cfAPI(ctx, c.APIToken, http.MethodPut, "/zones/"+c.ZoneID+"/dns_records/"+rec.ID,
+				map[string]any{"type": "CNAME", "name": hostname, "content": target, "proxied": true, "ttl": 1}, &out); err != nil {
+				return "", err
+			}
+		}
+		return rec.ID, nil
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := cfAPI(ctx, c.APIToken, http.MethodPost, "/zones/"+c.ZoneID+"/dns_records",
+		map[string]any{"type": "CNAME", "name": hostname, "content": target, "proxied": true, "ttl": 1}, &out); err != nil {
+		return "", err
+	}
+	return out.ID, nil
+}
+
+func (p *Panel) cfEnsurePanelDNS(ctx context.Context, c cloudflareCredentials) error {
+	hostname := p.setting("panel_hostname", "panel.satriyadi.com")
+	id, err := p.cfEnsureDNSName(ctx, c, hostname)
+	if err != nil {
+		return err
+	}
+	if id != "" {
+		_ = p.setSetting("panel_dns_record_id", id)
+	}
+	return nil
+}
+
+// cfCleanupDNS menghapus CNAME yang menunjuk ke tunnel ini tetapi hostname-nya
+// sudah tidak dipakai panel, agar DNS tetap cerminan konfigurasi tunnel.
+func (p *Panel) cfCleanupDNS(ctx context.Context, c cloudflareCredentials, desired map[string]bool) (int, error) {
+	target := c.TunnelID + ".cfargotunnel.com"
+	var out []cfDNSRecord
+	if err := cfAPI(ctx, c.APIToken, http.MethodGet, "/zones/"+c.ZoneID+"/dns_records?type=CNAME&per_page=100", nil, &out); err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, rec := range out {
+		if rec.Content == target && !desired[rec.Name] {
+			if err := cfAPI(ctx, c.APIToken, http.MethodDelete, "/zones/"+c.ZoneID+"/dns_records/"+rec.ID, nil, nil); err == nil {
+				removed++
+			}
+		}
+	}
+	return removed, nil
+}
+
 func (p *Panel) handleCloudflareApply(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Confirm string `json:"confirm"`
@@ -611,16 +728,20 @@ func (p *Panel) handleCloudflareApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.Confirm != "TERAPKAN" {
-		fail(w, http.StatusBadRequest, "Ketik TERAPKAN untuk konfirmasi penulisan konfigurasi")
+		fail(w, http.StatusBadRequest, "Ketik TERAPKAN untuk konfirmasi penerapan konfigurasi")
 		return
 	}
 	c := p.cfCreds()
-	if c.TunnelID == "" {
-		fail(w, http.StatusBadRequest, "Tunnel ID belum diisi")
+	if c.APIToken == "" || c.AccountID == "" || c.TunnelID == "" {
+		fail(w, http.StatusBadRequest, "API Token, Account ID, dan Tunnel ID Cloudflare wajib lengkap agar konfigurasi dapat diterapkan langsung ke Cloudflare")
 		return
 	}
 	path := p.setting("cloudflared_config", "/etc/cloudflared/config.yml")
 	apps, _ := p.listApps()
+	rules := p.cfIngressRules(apps)
+
+	// 1) Salinan lokal config.yml tetap ditulis (catatan & cadangan bila tunnel
+	//    suatu saat dipindah ke mode lokal) — bukan lagi sumber kebenaran.
 	var b strings.Builder
 	credFile := ""
 	if old, err := os.ReadFile(path); err == nil {
@@ -635,18 +756,14 @@ func (p *Panel) handleCloudflareApply(w http.ResponseWriter, r *http.Request) {
 		b.WriteString("credentials-file: " + credFile + "\n")
 	}
 	b.WriteString("ingress:\n")
-	b.WriteString("  - hostname: " + p.setting("panel_hostname", "panel.satriyadi.com") + "\n")
-	b.WriteString(fmt.Sprintf("    service: http://127.0.0.1:%d\n", p.intSetting("panel_port", 8282)))
-	seen := map[string]bool{}
-	for _, a := range apps {
-		if a.Hostname == "" || seen[a.Hostname] {
-			continue
+	for _, rl := range rules {
+		if rl.Hostname != "" {
+			b.WriteString("  - hostname: " + rl.Hostname + "\n")
+			b.WriteString("    service: " + rl.Service + "\n")
+		} else {
+			b.WriteString("  - service: " + rl.Service + "\n")
 		}
-		seen[a.Hostname] = true
-		b.WriteString("  - hostname: " + a.Hostname + "\n")
-		b.WriteString(fmt.Sprintf("    service: http://127.0.0.1:%d\n", a.Port))
 	}
-	b.WriteString("  - service: http_status:404\n")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		failDetail(w, http.StatusInternalServerError, "Tidak dapat menulis konfigurasi", err.Error())
 		return
@@ -664,7 +781,7 @@ func (p *Panel) handleCloudflareApply(w http.ResponseWriter, r *http.Request) {
 		failDetail(w, http.StatusInternalServerError, "Tidak dapat menulis konfigurasi", err.Error())
 		return
 	}
-	validation := "cloudflared tidak terpasang; konfigurasi ditulis tanpa validasi"
+	validation := "salinan lokal ditulis (cloudflared tidak terpasang untuk validasi)"
 	if _, err := exec.LookPath("cloudflared"); err == nil {
 		out, err := exec.Command("cloudflared", "tunnel", "--config", path, "ingress", "validate").CombinedOutput()
 		if err != nil {
@@ -672,24 +789,50 @@ func (p *Panel) handleCloudflareApply(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		validation = "validasi cloudflared lulus"
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_, _ = runCmdOutput(ctx, "systemctl reload "+p.setting("cloudflared_service", "cloudflared"), 20*time.Second)
-		cancel()
 	}
-	// sinkronkan DNS jika API tersedia
-	dnsCount := 0
-	if c.APIToken != "" && c.ZoneID != "" {
-		for _, a := range apps {
-			if a.Hostname == "" {
-				continue
-			}
-			if err := p.cfEnsureDNS(a, c); err == nil {
-				dnsCount++
-			}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	// 2) Terapkan konfigurasi ingress langsung ke tunnel Cloudflare lewat API.
+	//    cloudflared mode remote/token mengambilnya otomatis — tanpa restart.
+	if err := p.cfPushTunnelConfig(ctx, c, apps); err != nil {
+		failDetail(w, http.StatusBadGateway, "Gagal menerapkan konfigurasi ke tunnel Cloudflare", err.Error())
+		return
+	}
+
+	// 3) Sinkronkan DNS: hostname panel + semua hostname aplikasi; bersihkan
+	//    CNAME lama yang menunjuk ke tunnel ini tetapi sudah tidak dipakai.
+	desired := map[string]bool{}
+	dnsSynced := 0
+	var dnsErrs []string
+	panelHost := p.setting("panel_hostname", "panel.satriyadi.com")
+	desired[panelHost] = true
+	if err := p.cfEnsurePanelDNS(ctx, c); err != nil {
+		dnsErrs = append(dnsErrs, panelHost+": "+err.Error())
+	} else {
+		dnsSynced++
+	}
+	for _, a := range apps {
+		if a.Hostname == "" {
+			continue
+		}
+		desired[a.Hostname] = true
+		if err := p.cfEnsureDNS(a, c); err != nil {
+			dnsErrs = append(dnsErrs, a.Hostname+": "+err.Error())
+		} else {
+			dnsSynced++
 		}
 	}
-	p.audit("cloudflare.apply", "integration", "cloudflare", "Konfigurasi ingress diterapkan; "+validation)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "validation": validation, "path": path, "dnsSynced": dnsCount, "config": b.String()})
+	dnsRemoved, _ := p.cfCleanupDNS(ctx, c, desired)
+
+	msg := validation + "; konfigurasi tunnel diterapkan ke Cloudflare dan aktif otomatis"
+	p.audit("cloudflare.apply", "integration", "cloudflare", "Ingress diterapkan ke Cloudflare; DNS tersinkron "+strconv.Itoa(dnsSynced)+", dibersihkan "+strconv.Itoa(dnsRemoved))
+	resp := map[string]any{"ok": true, "validation": msg, "path": path, "dnsSynced": dnsSynced, "dnsRemoved": dnsRemoved, "tunnelApplied": true, "config": b.String()}
+	if len(dnsErrs) > 0 {
+		resp["dnsErrors"] = dnsErrs
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (p *Panel) cfEnsureDNS(app *App, c cloudflareCredentials) error {
@@ -698,26 +841,13 @@ func (p *Panel) cfEnsureDNS(app *App, c cloudflareCredentials) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	target := c.TunnelID + ".cfargotunnel.com"
-	if app.DNSRecordID != "" {
-		var out struct {
-			ID string `json:"id"`
-		}
-		err := cfAPI(ctx, c.APIToken, http.MethodPut, "/zones/"+c.ZoneID+"/dns_records/"+app.DNSRecordID,
-			map[string]any{"type": "CNAME", "name": app.Hostname, "content": target, "proxied": true, "ttl": 1}, &out)
-		if err == nil {
-			return nil
-		}
-	}
-	var out struct {
-		ID string `json:"id"`
-	}
-	err := cfAPI(ctx, c.APIToken, http.MethodPost, "/zones/"+c.ZoneID+"/dns_records",
-		map[string]any{"type": "CNAME", "name": app.Hostname, "content": target, "proxied": true, "ttl": 1}, &out)
+	id, err := p.cfEnsureDNSName(ctx, c, app.Hostname)
 	if err != nil {
 		return err
 	}
-	_, _ = p.db.Exec(`UPDATE apps SET dns_record_id=? WHERE id=?`, out.ID, app.ID)
+	if id != "" {
+		_, _ = p.db.Exec(`UPDATE apps SET dns_record_id=? WHERE id=?`, id, app.ID)
+	}
 	return nil
 }
 
@@ -727,24 +857,27 @@ func (p *Panel) syncAppIngress(appID int64, oldHostname string) {
 		return
 	}
 	c := p.cfCreds()
+	oldRecordID := app.DNSRecordID
 	if c.APIToken != "" && c.ZoneID != "" && app.Hostname != "" {
 		if err := p.cfEnsureDNS(app, c); err != nil {
 			p.logf("sinkronisasi DNS %s: %v", app.Hostname, err)
 		}
 	}
-	if oldHostname != "" && oldHostname != app.Hostname && app.DNSRecordID != "" && c.APIToken != "" {
+	if oldHostname != "" && oldHostname != app.Hostname && oldRecordID != "" && c.APIToken != "" && c.ZoneID != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		if err := cfAPI(ctx, c.APIToken, http.MethodDelete, "/zones/"+c.ZoneID+"/dns_records/"+app.DNSRecordID, nil, nil); err == nil {
-			_, _ = p.db.Exec(`UPDATE apps SET dns_record_id='' WHERE id=?`, app.ID)
-		}
+		_ = cfAPI(ctx, c.APIToken, http.MethodDelete, "/zones/"+c.ZoneID+"/dns_records/"+oldRecordID, nil, nil)
 		cancel()
 	}
-	if p.boolSetting("cloudflared_auto_sync", false) && c.TunnelID != "" {
-		path := p.setting("cloudflared_config", "/etc/cloudflared/config.yml")
-		if fileExists(path) {
-			// jangan menulis diam-diam; cukup catat agar admin menerapkan dari halaman Cloudflared
-			p.notify("cloudflare", "Konfigurasi ingress perlu diterapkan", "Hostname "+app.Hostname+" ditambahkan. Buka Cloudflared & Port lalu klik Terapkan.", &app.ID)
+	// Dengan sinkronisasi otomatis aktif, perubahan hostname langsung diterapkan
+	// ke konfigurasi tunnel Cloudflare — tidak lagi sekadar pengingat manual.
+	if p.boolSetting("cloudflared_auto_sync", false) && c.APIToken != "" && c.AccountID != "" && c.TunnelID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		apps, _ := p.listApps()
+		if err := p.cfPushTunnelConfig(ctx, c, apps); err != nil {
+			p.logf("terapkan konfigurasi tunnel: %v", err)
+			p.notify("cloudflare", "Gagal menerapkan konfigurasi tunnel", "Perubahan hostname "+app.Hostname+" belum aktif di Cloudflare: "+err.Error(), &app.ID)
 		}
+		cancel()
 	}
 }
 
@@ -752,12 +885,22 @@ func (p *Panel) removeAppIngress(app App) {
 	c := p.cfCreds()
 	if app.DNSRecordID != "" && c.APIToken != "" && c.ZoneID != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
 		_ = cfAPI(ctx, c.APIToken, http.MethodDelete, "/zones/"+c.ZoneID+"/dns_records/"+app.DNSRecordID, nil, nil)
+		cancel()
 	}
-	if app.Hostname != "" {
-		p.notify("cloudflare", "Hostname aplikasi dihapus", "Hapus/ubah ingress "+app.Hostname+" dari konfigurasi cloudflared jika masih ada.", nil)
+	if app.Hostname == "" {
+		return
 	}
+	if p.boolSetting("cloudflared_auto_sync", false) && c.APIToken != "" && c.AccountID != "" && c.TunnelID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		apps, _ := p.listApps()
+		if err := p.cfPushTunnelConfig(ctx, c, apps); err != nil {
+			p.logf("terapkan konfigurasi tunnel setelah hapus aplikasi: %v", err)
+		}
+		cancel()
+		return
+	}
+	p.notify("cloudflare", "Hostname aplikasi dihapus", "Hapus/ubah ingress "+app.Hostname+" dari konfigurasi cloudflared jika masih ada.", nil)
 }
 
 func (p *Panel) portMappings() []map[string]any {
