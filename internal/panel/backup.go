@@ -57,6 +57,30 @@ func (p *Panel) runBackup(ctx context.Context, trigger string) (*Backup, error) 
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
+	return p.runBackupLocked(ctx, trigger, id, started)
+}
+
+// startBackupAsync memulai backup di latar belakang dan langsung mengembalikan ID.
+func (p *Panel) startBackupAsync(trigger string) (*Backup, error) {
+	if !p.backupMu.TryLock() {
+		return nil, fmt.Errorf("backup lain sedang berjalan")
+	}
+	started := time.Now().UTC()
+	res, err := p.db.Exec(`INSERT INTO backups(trigger,status,started_at) VALUES(?,?,?)`, trigger, "berjalan", started.Format(time.RFC3339))
+	if err != nil {
+		p.backupMu.Unlock()
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	b := &Backup{ID: id, Trigger: trigger, Status: "berjalan", StartedAt: started.Format(time.RFC3339)}
+	go func() {
+		defer p.backupMu.Unlock()
+		_, _ = p.runBackupLocked(context.Background(), trigger, id, started)
+	}()
+	return b, nil
+}
+
+func (p *Panel) runBackupLocked(ctx context.Context, trigger string, id int64, started time.Time) (*Backup, error) {
 	p.publish("backup.start", map[string]any{"id": id, "trigger": trigger})
 	finish := func(b *Backup, err error) (*Backup, error) {
 		status, msg := "berhasil", ""

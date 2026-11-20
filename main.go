@@ -19,7 +19,7 @@ import (
 //go:embed all:web
 var webAssets embed.FS
 
-const version = "0.1.0"
+const version = "0.3.0"
 
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {

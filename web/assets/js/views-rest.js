@@ -181,7 +181,7 @@ async function viewAudit(el) {
     try{ const d=await api('/api/audit'+qs({q,action,limit,offset})); const logs=d.logs||[];
       $('#audit-total',el).textContent=`${fmtNum(d.total)} catatan`;
       if(d.actions&&$('#audit-action',el).options.length<=1)d.actions.forEach(a=>$('#audit-action',el).insertAdjacentHTML('beforeend',`<option value="${attr(a.action)}">${esc(a.action)} (${a.count})</option>`));
-      $('#audit-table',el).innerHTML=logs.length?`<table><thead><tr><th>Waktu</th><th>Aktor</th><th>Aksi</th><th>Objek</th><th>Ringkasan</th><th>IP</th></tr></thead><tbody>${logs.map(l=>`<tr class="clickable" data-audit="${l.id}"><td class="nowrap">${fmtDate(l.createdAt)}</td><td><span class="tag">${esc(l.actor)}</span></td><td><span class="mono small">${esc(l.action)}</span></td><td>${esc(l.objectType||'—')}${l.objectId?` <span class="mono tiny">#${esc(l.objectId)}</span>`:''}</td><td class="small" style="max-width:460px">${esc(l.summary)}</td><td class="mono tiny">${esc(l.ip||'—')}</td></tr>`).join('')}</tbody></table>`:emptyState('Tidak ada catatan','Ubah filter atau lakukan aktivitas di panel.','','shield');
+      $('#audit-table',el).innerHTML=logs.length?`<table><thead><tr><th>Waktu</th><th>Aktor</th><th>Aksi</th><th>Objek</th><th>Sumber</th><th>Ringkasan</th><th>IP</th></tr></thead><tbody>${logs.map(l=>`<tr class="clickable" data-audit="${l.id}"><td class="nowrap">${fmtDate(l.createdAt)}</td><td><span class="tag">${esc(l.actor)}</span></td><td><span class="mono small">${esc(l.action)}</span></td><td>${esc(l.objectType||'—')}${l.objectId?` <span class="mono tiny">#${esc(l.objectId)}</span>`:''}</td><td>${(l.source||'panel')==='mcp'?badgeText('blue','MCP'):badgeText('gray','Panel')}${l.tokenName?`<div class="tiny muted mono mt-4">${esc(l.tokenName)}</div>`:''}</td><td class="small" style="max-width:420px">${esc(l.summary)}</td><td class="mono tiny">${esc(l.ip||'—')}</td></tr>`).join('')}</tbody></table>`:emptyState('Tidak ada catatan','Ubah filter atau lakukan aktivitas di panel.','','shield');
       $$('[data-audit]',el).forEach(r=>r.onclick=()=>{ const l=logs.find(x=>String(x.id)===r.dataset.audit); openAuditDetail(l); });
       $('#audit-prev',el).disabled=offset===0; $('#audit-next',el).disabled=offset+limit>=d.total;
     }catch(e){ $('#audit-table',el).innerHTML=errorBlock(e.message); }
@@ -195,7 +195,7 @@ async function viewAudit(el) {
   load();
 }
 function openAuditDetail(l){
-  modal({title:'Detail audit #'+l.id,subtitle:esc(l.action),body:`<dl class="kv"><dt>Waktu</dt><dd>${fmtDate(l.createdAt)}</dd><dt>Aktor</dt><dd>${esc(l.actor)}</dd><dt>Aksi</dt><dd class="mono">${esc(l.action)}</dd><dt>Objek</dt><dd>${esc(l.objectType||'—')} ${esc(l.objectId||'')}</dd><dt>IP</dt><dd class="mono">${esc(l.ip||'—')}</dd></dl><div class="hr"></div><p class="small" style="line-height:1.65">${esc(l.summary)}</p>`,footer:`<button class="btn" data-close>Tutup</button>`});
+  modal({title:'Detail audit #'+l.id,subtitle:esc(l.action),body:`<dl class="kv"><dt>Waktu</dt><dd>${fmtDate(l.createdAt)}</dd><dt>Aktor</dt><dd>${esc(l.actor)}</dd><dt>Aksi</dt><dd class="mono">${esc(l.action)}</dd><dt>Objek</dt><dd>${esc(l.objectType||'—')} ${esc(l.objectId||'')}</dd><dt>Sumber</dt><dd>${esc((l.source||'panel')==='mcp'?'MCP':'Panel')}</dd>${l.tokenName?`<dt>Token MCP</dt><dd class="mono">${esc(l.tokenName)}</dd>`:''}<dt>IP</dt><dd class="mono">${esc(l.ip||'—')}</dd></dl><div class="hr"></div><p class="small" style="line-height:1.65">${esc(l.summary)}</p>`,footer:`<button class="btn" data-close>Tutup</button>`});
 }
 
 /* ---------- Pengaturan ---------- */
@@ -205,9 +205,9 @@ async function viewSettings(el) {
   let d; try{ d=await api('/api/settings'); }catch(e){el.innerHTML=errorBlock(e.message);return;}
   const g=d.general||{}, dep=d.deploy||{}, sec=d.security||{}, mon=d.monitor||{}, db=d.database||{};
   const tab=(location.hash.split('?')[1]||'tab=umum').replace('tab=','');
-  const tabs=[['umum','Umum','settings'],['deploy','Deploy & port','route'],['keamanan','Keamanan','shield'],['monitor','Monitor','gauge'],['integrations','Integrasi','link'],['sesi','Sesi','key']];
+  const tabs=[['umum','Umum','settings'],['deploy','Deploy & port','route'],['keamanan','Keamanan','shield'],['monitor','Monitor','gauge'],['integrations','Integrasi','link'],['mcp','MCP','terminal'],['sesi','Sesi','key']];
   const active=tabs.some(t=>t[0]===tab)?tab:'umum';
-  el.innerHTML=`${pageHead('Pengaturan','Konfigurasi server, deployment, keamanan, monitoring, dan integrasi.',`<span class="badge gray">SatriaPanel v${esc(g.version||'0.1.0')}</span>`)}
+  el.innerHTML=`${pageHead('Pengaturan','Konfigurasi server, deployment, keamanan, monitoring, dan integrasi.',`<span class="badge gray">SatriaPanel v${esc(g.version||'0.3.0')}</span>`)}
   <div class="tabs mb-16">${tabs.map(([k,t,ic])=>`<a class="tab ${active===k?'active':''}" href="#/settings?tab=${k}">${icon(ic)}${t}</a>`).join('')}</div><div id="settings-main"></div>`;
   const main=$('#settings-main',el);
   if(active==='umum'){
@@ -217,7 +217,7 @@ async function viewSettings(el) {
       ${field('Base URL','<input class="input mono" name="baseUrl" value="'+attr(g.baseUrl||'')+'" placeholder="https://panel.satriyadi.com">','Dipakai untuk URL webhook GitHub dan OAuth.')}
       ${field('Zona waktu','<select class="select" name="timezone">'+(g.timezone&&!['UTC','Asia/Jakarta','Asia/Makassar','Asia/Jayapura','Asia/Singapore','Asia/Tokyo','Europe/London','America/New_York'].includes(g.timezone)?`<option selected value="${attr(g.timezone)}">Lokal server (${esc(g.timezone)})</option>`:'')+['UTC','Asia/Jakarta','Asia/Makassar','Asia/Jayapura','Asia/Singapore','Asia/Tokyo','Europe/London','America/New_York'].map(z=>`<option ${g.timezone===z?'selected':''}>${z}</option>`).join('')+'</select>','Waktu disimpan UTC, ditampilkan dalam zona ini.')}
     </div><div class="flex end mt-16"><button class="btn primary" id="save-general">${icon('check')}Simpan</button></div></form></section>
-    <section class="card"><div class="card-head"><h3>${icon('info')}Tentang sistem</h3></div><div class="card-body"><dl class="kv"><dt>Versi</dt><dd class="mono">${esc(g.version||'0.1.0')}</dd><dt>Go</dt><dd class="mono">${esc(g.goVersion||'—')}</dd><dt>OS / arsitektur</dt><dd>${esc(g.os||'')} / ${esc(g.arch||'')}</dd><dt>Database</dt><dd>SQLite (panel.db)</dd><dt>Enkripsi</dt><dd>AES-256-GCM · secret.key</dd><dt>PID</dt><dd class="mono">—</dd></dl><div class="alert-strip info mt-16">${icon('lock')}<div>Kredensial aplikasi selalu disamarkan; tidak ada endpoint reveal di panel.</div></div></div></section></div>`;
+    <section class="card"><div class="card-head"><h3>${icon('info')}Tentang sistem</h3></div><div class="card-body"><dl class="kv"><dt>Versi</dt><dd class="mono">${esc(g.version||'0.3.0')}</dd><dt>Go</dt><dd class="mono">${esc(g.goVersion||'—')}</dd><dt>OS / arsitektur</dt><dd>${esc(g.os||'')} / ${esc(g.arch||'')}</dd><dt>Database</dt><dd>SQLite (panel.db)</dd><dt>Enkripsi</dt><dd>AES-256-GCM · secret.key</dd><dt>PID</dt><dd class="mono">—</dd></dl><div class="alert-strip info mt-16">${icon('lock')}<div>Kredensial aplikasi selalu disamarkan; tidak ada endpoint reveal di panel.</div></div></div></section></div>`;
     $('#save-general',main).onclick=saveSettings;
   }
   if(active==='deploy'){
@@ -258,12 +258,79 @@ async function viewSettings(el) {
     api('/api/integrations/github').then(g=>{$('#gh-status',main).innerHTML=g.configured?badgeText('green','@'+esc(g.login||'')):badgeText('gray','Belum terhubung');}).catch(_=>{});
     $('#gh-config',main).onclick=()=>openGitHubConfig(()=>viewSettings(el));
   }
+  if(active==='mcp'){
+    main.innerHTML=`<div id="mcp-panel">${loadingBlock()}</div>`;
+    renderMCPTab(main, el);
+  }
   if(active==='sesi'){
     main.innerHTML=`<div class="card"><div class="card-head"><h3>${icon('key')}Sesi aktif</h3><button class="btn sm danger" id="logout-all">${icon('power')}Akhiri semua sesi</button></div><div id="sessions-list">${loadingBlock()}</div></div>`;
     api('/api/sessions').then(s=>{const list=s.sessions||[];$('#sessions-list',main).innerHTML=list.length?`<div class="table-wrap"><table><thead><tr><th>Dibuat</th><th>Terakhir</th><th>Berakhir</th><th>IP</th><th>Perangkat</th><th></th></tr></thead><tbody>${list.map(x=>`<tr><td>${fmtDate(x.createdAt)}</td><td>${timeAgo(x.lastSeenAt)}</td><td>${fmtDate(x.expiresAt)}</td><td class="mono tiny">${esc(x.ip)}</td><td class="tiny" style="max-width:330px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.userAgent)}</td><td><button class="btn-icon danger" data-session="${x.id}" title="Cabut">${icon('close')}</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty small">Tidak ada sesi aktif</div>`;$$('[data-session]',main).forEach(b=>b.onclick=async()=>{try{await api('/api/sessions/'+b.dataset.session,{method:'DELETE'});toast('Sesi dicabut');viewSettings(el);}catch(e){toast('Gagal',e.message,'error');}});}).catch(e=>{$('#sessions-list',main).innerHTML=errorBlock(e.message);});
     $('#logout-all',main).onclick=async()=>{if(await confirmDialog({title:'Akhiri semua sesi?',message:'Semua perangkat termasuk sesi ini akan keluar dari panel.',typed:'KELUAR',danger:true,confirmLabel:'Akhiri semua'})){try{await api('/api/auth/logout-all',{method:'POST'});location.reload();}catch(e){toast('Gagal',e.message,'error');}}};
   }
   async function saveSettings(){ const form=main.querySelector('form'); const fd=new FormData(form); const body={}; fd.forEach((v,k)=>body[k]=v); ['portPoolStart','portPoolEnd','panelPort','releaseKeep','logRetentionDays','cronRetentionDays','sessionIdleMinutes','alertDisk','alertRam','alertRedis'].forEach(k=>{if(k in body)body[k]=Number(body[k]);}); const ap=form.querySelector('[name=allowProvision]'); if(ap) body.allowProvision=ap.checked; try{await api('/api/settings',{method:'PUT',body});toast('Pengaturan disimpan');setTimeout(()=>viewSettings(el),400);}catch(e){toast('Gagal menyimpan',e.detail||e.message,'error');} }
+}
+async function renderMCPTab(main, rootEl) {
+  const box = $('#mcp-panel', main);
+  let cfg;
+  try { cfg = await api('/api/mcp'); } catch (e) { box.innerHTML = errorBlock(e.message); return; }
+  const tokens = cfg.tokens || [];
+  const scopeInfo = cfg.scopeInfo || {};
+  box.innerHTML = `<div class="grid g2 mb-16">
+    <section class="card"><div class="card-head"><h3>${icon('terminal')}Endpoint MCP</h3>${cfg.enabled?badgeText('green','Aktif'):badgeText('gray','Nonaktif')}</div><div class="card-body">
+      <div class="alert-strip info mb-12">${icon('info')}<div>Streamable HTTP JSON-RPC 2.0. Gunakan header <span class="mono">Authorization: Bearer &lt;TOKEN-MCP&gt;</span>. Endpoint memakai tunnel dan port panel yang sama.</div></div>
+      ${field('URL endpoint','<input class="input mono" readonly value="'+attr(cfg.endpoint||'')+'">')}
+      ${field('Batas laju per token (per menit)','<input class="input mono" type="number" id="mcp-rate" min="1" max="600" value="'+attr(cfg.rateLimit||60)+'">','Berlaku per token; kelebihan ditolak dan dicatat di audit.')}
+      <div class="mt-12">${switchRow('Aktifkan endpoint MCP','Saat dimatikan, seluruh permintaan ditolak tanpa menghapus token.','mcpEnabled',!!cfg.enabled)}</div>
+      <div class="flex end mt-16"><button class="btn primary" id="mcp-save">${icon('check')}Simpan</button></div>
+    </div></section>
+    <section class="card"><div class="card-head"><h3>${icon('shield')}Batas keamanan MCP</h3></div><div class="card-body"><div class="list-row"><span class="avatar-sm">${icon('lock')}</span><div><div class="small strong">Kredensial tidak pernah keluar</div><div class="tiny muted">PAT GitHub, token Cloudflare, refresh token Drive, password, dan secret tidak tersedia lewat MCP.</div></div></div><div class="list-row"><span class="avatar-sm">${icon('key')}</span><div><div class="small strong">Token terpisah</div><div class="tiny muted">Token MCP tidak dapat dipakai login panel, dan sesi panel tidak dapat memanggil MCP.</div></div></div><div class="list-row"><span class="avatar-sm">${icon('alert')}</span><div><div class="small strong">Konfirmasi destruktif</div><div class="tiny muted">Aksi berisiko memerlukan confirm=true dan pengulangan target persis.</div></div></div><div class="list-row"><span class="avatar-sm">${icon('activity')}</span><div><div class="small strong">Teraudit</div><div class="tiny muted">Setiap panggilan, penolakan, dan pencabutan token masuk audit dengan sumber MCP.</div></div></div></div></section>
+  </div>
+  <section class="card"><div class="card-head"><h3>${icon('key')}Token MCP</h3><button class="btn primary sm" id="mcp-new">${icon('plus')}Token baru</button></div>
+    <div class="table-wrap">${tokens.length?`<table><thead><tr><th>Nama</th><th>Prefix</th><th>Scope</th><th>Dibuat</th><th>Terakhir dipakai</th><th>Status</th><th></th></tr></thead><tbody>${tokens.map(t=>`<tr><td class="strong">${esc(t.name)}</td><td class="mono tiny">${esc(t.prefix)}</td><td>${(t.scopes||[]).map(s=>`<span class="tag mono">${esc(s)}</span>`).join(' ')}</td><td class="nowrap small">${fmtDate(t.createdAt)}</td><td class="small">${t.lastUsedAt?timeAgo(t.lastUsedAt):'—'}</td><td>${t.active?badgeText('green','Aktif'):badgeText('red','Dicabut')}</td><td>${t.active?`<button class="btn sm danger" data-revoke="${t.id}" data-name="${attr(t.name)}">Cabut</button>`:''}</td></tr>`).join('')}</tbody></table>`:emptyState('Belum ada token MCP','Buat token dengan scope minimal yang dibutuhkan klien MCP.','','terminal')}</div>
+    <div class="card-foot"><span class="tiny muted">Token hanya ditampilkan sekali saat dibuat. Pencabutan berlaku seketika.</span></div>
+  </section>`;
+  const save = $('#mcp-save', box);
+  save.onclick = async () => {
+    try {
+      await api('/api/mcp/settings', { method: 'PUT', body: { enabled: $('#mcp-enabled', box).checked, rateLimit: Number($('#mcp-rate', box).value) } });
+      toast('Pengaturan MCP disimpan');
+      renderMCPTab(main, rootEl);
+    } catch (e) { toast('Gagal menyimpan', e.detail || e.message, 'error'); }
+  };
+  $('#mcp-new', box).onclick = () => openCreateMCPToken(scopeInfo, () => renderMCPTab(main, rootEl));
+  $$('[data-revoke]', box).forEach(btn => btn.onclick = async () => {
+    if (!await confirmDialog({ title: 'Cabut token MCP?', message: 'Token "' + btn.dataset.name + '" langsung tidak dapat dipakai. Tindakan ini tidak dapat dibatalkan.', typed: 'CABUT', danger: true, confirmLabel: 'Cabut token' })) return;
+    try { await api('/api/mcp/tokens/' + btn.dataset.revoke, { method: 'DELETE' }); toast('Token dicabut'); renderMCPTab(main, rootEl); } catch (e) { toast('Gagal', e.detail || e.message, 'error'); }
+  });
+}
+function openCreateMCPToken(scopeInfo, done) {
+  const scopes = Object.keys(scopeInfo);
+  const m = modal({
+    title: 'Token MCP baru', subtitle: 'Pilih scope minimal. Token hanya ditampilkan satu kali.',
+    body: `<form id="mcp-token-form">${field('Nama token','<input class="input" name="name" required minlength="2" maxlength="80" placeholder="mis. Claude Desktop">')}<div class="field"><label class="label">Scope</label><div style="display:grid;gap:8px">${scopes.map((s,i)=>`<label class="list-row" style="cursor:pointer"><input type="checkbox" class="scope-check" value="${attr(s)}" ${s==='read'?'checked':''}><div><div class="small strong mono">${esc(s)}</div><div class="tiny muted">${esc(scopeInfo[s]||'')}</div></div></label>`).join('')}</div></div><div class="alert-strip mt-12">${icon('alert')}<div>Token dengan scope admin dapat melakukan aksi destruktif. Berikan hanya kepada klien tepercaya.</div></div></form>`,
+    footer: `<button class="btn ghost" data-close>Batal</button><button class="btn primary" id="mcp-token-create">${icon('key')}Buat token</button>`
+  });
+  $('#mcp-token-create', m.overlay).onclick = async () => {
+    const name = $('#mcp-token-form', m.overlay).name.value.trim();
+    const selected = $$('.scope-check', m.overlay).filter(c => c.checked).map(c => c.value);
+    if (!name) { toast('Nama token wajib diisi', '', 'error'); return; }
+    try {
+      const r = await api('/api/mcp/tokens', { method: 'POST', body: { name, scopes: selected } });
+      m.close();
+      openMCPTokenOnce(r.token, r.name, r.scopes, done);
+    } catch (e) { toast('Gagal membuat token', e.detail || e.message, 'error'); }
+  };
+}
+function openMCPTokenOnce(token, name, scopes, done) {
+  const m = modal({
+    title: 'Salin token MCP sekarang', subtitle: 'Token tidak akan ditampilkan lagi setelah dialog ditutup.',
+    body: `<div class="alert-strip danger mb-12">${icon('alert')}<div>Simpan token ini di pengelola rahasia klien MCP. Panel hanya menyimpan hash dan tidak dapat menampilkan nilainya kembali.</div></div><div class="field"><label class="label">Token ${esc(name||'')}</label><textarea class="input mono" id="mcp-token-value" readonly rows="3" style="resize:vertical;line-height:1.5">${esc(token)}</textarea></div><div class="tiny muted">Scope: ${(scopes||[]).map(esc).join(', ')}</div>`,
+    footer: `<button class="btn outline" id="mcp-token-copy">${icon('copy')}Salin</button><button class="btn primary" id="mcp-token-done">Selesai</button>`
+  });
+  $('#mcp-token-copy', m.overlay).onclick = async () => {
+    try { await navigator.clipboard.writeText(token); toast('Token disalin'); } catch (_) { const el = $('#mcp-token-value', m.overlay); el.focus(); el.select(); toast('Pilih dan salin manual', '', 'error'); }
+  };
+  $('#mcp-token-done', m.overlay).onclick = () => { m.close(); done && done(); };
 }
 function openGitHubConfig(done){
   api('/api/integrations/github').then(g=>{
@@ -285,7 +352,7 @@ function renderAuth(setup) {
       <div class="auth-copy"><h1>Kendali penuh<br><span>home server</span> Anda.</h1><p>Deploy aplikasi, kelola database, pantau resource, dan backup — dari satu panel yang ringan dan aman diakses lewat Cloudflare Tunnel.</p>
         <div class="auth-features">${[['route','Port-first & native-first'],['layers','Rilis terisolasi + rollback'],['lock','Kredensial terenkripsi'],['archive','Backup otomatis Drive'],['terminal','Terminal & file manager'],['shield','Audit log lengkap']].map(([ic,t])=>`<div class="auth-feature">${icon(ic)}<span>${t}</span></div>`).join('')}</div>
       </div>
-      <div class="auth-foot"><span>SatriaPanel v${esc(state.health?.version||'0.1.0')}</span><span>${esc(state.health?.serverName||'')}</span><span>Akses privat via Cloudflare</span></div>
+      <div class="auth-foot"><span>SatriaPanel v${esc(state.health?.version||'0.3.0')}</span><span>${esc(state.health?.serverName||'')}</span><span>Akses privat via Cloudflare</span></div>
     </section>
     <section class="auth-panel"><div class="auth-box">
       <h2>${setup?'Selamat datang':'Selamat datang kembali'}</h2>

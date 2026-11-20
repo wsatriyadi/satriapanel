@@ -152,5 +152,11 @@ func (p *Panel) registerRoutes() {
 	m.HandleFunc("GET /api/sessions", p.handleSessions)
 	m.HandleFunc("DELETE /api/sessions/{id}", p.handleSessionDelete)
 
+	m.HandleFunc("POST /mcp", p.handleMCP)
+	m.HandleFunc("GET /api/mcp", p.handleMCPConfig)
+	m.HandleFunc("POST /api/mcp/tokens", p.handleMCPTokens)
+	m.HandleFunc("DELETE /api/mcp/tokens/{id}", p.handleMCPTokenItem)
+	m.HandleFunc("PUT /api/mcp/settings", p.handleMCPSettings)
+
 	m.HandleFunc("/", p.handleStatic)
 }

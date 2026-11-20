@@ -51,6 +51,14 @@ type Panel struct {
 	terms  map[string]time.Time
 
 	driveMu sync.Mutex
+
+	mcpMu   sync.Mutex
+	mcpRate map[int64]*mcpRateState
+}
+
+type mcpRateState struct {
+	window time.Time
+	count  int
 }
 
 type loginState struct {
@@ -83,6 +91,7 @@ func New(cfg Config, assets fs.FS, root string) (*Panel, error) {
 		loginMap: map[string]*loginState{},
 		alertAt:  map[string]time.Time{},
 		terms:    map[string]time.Time{},
+		mcpRate:  map[int64]*mcpRateState{},
 	}
 	return p, nil
 }

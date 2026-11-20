@@ -185,9 +185,22 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 	object_id TEXT NOT NULL DEFAULT '',
 	summary TEXT NOT NULL DEFAULT '',
 	ip TEXT NOT NULL DEFAULT '',
+	source TEXT NOT NULL DEFAULT 'panel',
+	token_name TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
+CREATE TABLE IF NOT EXISTS mcp_tokens (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL,
+	prefix TEXT NOT NULL,
+	token_hash TEXT NOT NULL UNIQUE,
+	scopes_json TEXT NOT NULL DEFAULT '["read"]',
+	created_at TEXT NOT NULL,
+	last_used_at TEXT,
+	revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_tokens_hash ON mcp_tokens(token_hash);
 CREATE TABLE IF NOT EXISTS settings (
 	key TEXT PRIMARY KEY,
 	value TEXT NOT NULL DEFAULT ''
@@ -238,6 +251,20 @@ func (p *Panel) openDB() error {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return fmt.Errorf("migrasi basis data: %w", err)
+	}
+	// Migrasi aditif untuk basis data yang dibuat sebelum MCP v0.3.
+	for _, col := range []struct{ name, ddl string }{
+		{"source", `ALTER TABLE audit_logs ADD COLUMN source TEXT NOT NULL DEFAULT 'panel'`},
+		{"token_name", `ALTER TABLE audit_logs ADD COLUMN token_name TEXT NOT NULL DEFAULT ''`},
+	} {
+		var n int
+		_ = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('audit_logs') WHERE name=?`, col.name).Scan(&n)
+		if n == 0 {
+			if _, err := db.Exec(col.ddl); err != nil {
+				db.Close()
+				return fmt.Errorf("migrasi audit_logs.%s: %w", col.name, err)
+			}
+		}
 	}
 	p.db = db
 	return nil
@@ -363,6 +390,8 @@ func (p *Panel) defaults() {
 		"notif_rules":          `{"deploy":true,"cron":true,"backup":true,"alert":true,"security":true,"cloudflare":true}`,
 		"setup_done":           "false",
 		"timezone":             systemTimezone(),
+		"mcp_enabled":          "true",
+		"mcp_rate_limit":       "60",
 	}
 	for k, v := range def {
 		var exists int
@@ -436,8 +465,14 @@ func jsonString(v any) string {
 }
 
 func (p *Panel) audit(action, objType, objID, summary string) {
-	_, _ = p.db.Exec(`INSERT INTO audit_logs(actor,action,object_type,object_id,summary,created_at) VALUES('admin',?,?,?,?,?)`,
+	_, _ = p.db.Exec(`INSERT INTO audit_logs(actor,action,object_type,object_id,summary,source,created_at) VALUES('admin',?,?,?,?,'panel',?)`,
 		action, objType, objID, summary, nowUTC())
+}
+
+func (p *Panel) auditMCP(tokenName, tool, target, summary, ip string) {
+	_, _ = p.db.Exec(`INSERT INTO audit_logs(actor,action,object_type,object_id,summary,ip,source,token_name,created_at)
+		VALUES(?,?,?,?,?,?,'mcp',?,?)`,
+		tokenName, "mcp."+tool, "mcp", truncate(target, 500), truncate(summary, 1000), ip, tokenName, nowUTC())
 }
 
 func (p *Panel) notify(kind, title, body string, appID *int64) {

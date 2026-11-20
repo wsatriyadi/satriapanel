@@ -17,6 +17,7 @@ Panel deploy dan manajemen aplikasi untuk home server Ubuntu milik satu admin. S
 - **Backup** — arsip lokal + Google Drive (scope `drive.file`), manifest SHA-256, retensi harian/mingguan, dan restore dengan verifikasi checksum.
 - **Notifikasi** — pusat notifikasi panel, Telegram, dan gateway WhatsApp generik.
 - **Audit & monitor** — audit log lengkap, metrik CPU/RAM/disk live via SSE, alert dengan deduplikasi.
+- **MCP API** — endpoint Streamable HTTP `/mcp` di binary dan tunnel yang sama, token bercakupan (`read`, `deploy`, `cron`, `backup`, `data-write`, `admin`), konfirmasi untuk aksi destruktif, deploy/backup asinkron, dan audit setiap panggilan.
 - **Keamanan** — AES-256-GCM untuk kredensial, bcrypt, sesi HttpOnly, CSRF header `X-Satria`, rate limit login, CSP ketat, dan tidak ada endpoint reveal kredensial.
 
 ## Persyaratan
@@ -115,6 +116,36 @@ data/
 - Password admin di-hash dengan bcrypt cost 12.
 - Content-Security-Policy membatasi script ke origin panel; tidak ada CDN atau font eksternal.
 - Backup berisi `secret.key` dan seluruh data sensitif. Simpan arsip backup di tempat aman, dan batasi akses folder `data/backups`.
+
+## MCP API
+
+SatriaPanel menyediakan server MCP (Model Context Protocol) melalui Streamable HTTP di `https://<panel>/mcp`. Endpoint berjalan di binary dan tunnel yang sama, bukan layanan terpisah.
+
+1. Buka **Pengaturan → MCP**.
+2. Buat token, pilih scope, lalu salin token sekali saja. Token disimpan sebagai hash SHA-256.
+3. Konfigurasikan klien MCP:
+
+```json
+{
+  "mcpServers": {
+    "satriapanel": {
+      "type": "http",
+      "url": "https://panel.satriyadi.com/mcp",
+      "headers": { "Authorization": "Bearer spmcp_..." }
+    }
+  }
+}
+```
+
+Scope: `read` (baca/status/log/berkas/skema/SELECT), `deploy` (deploy, rollback, start/stop/restart aplikasi/container), `cron`, `backup`, `data-write` (DML), dan `admin` (aksi destruktif seperti hapus aplikasi/database, ubah env, DDL, flush Redis, restore, tulis/hapus berkas, shell, apply ingress). `admin` mencakup seluruh scope lain.
+
+- Token baru memakai `read` secara default dan hanya ditampilkan sekali.
+- Pencabutan token berlaku seketika. Saklar utama dapat menonaktifkan endpoint tanpa menghapus token.
+- Aksi destruktif memerlukan `confirm: true` dan `target` yang diulang persis (slug, nama database, ID backup, path, atau perintah).
+- Deploy dan backup berjalan asinkron; pantau dengan `deploy_status` atau `backup_status`.
+- Setiap panggilan berhasil/ditolak masuk **Audit** dengan sumber `MCP`, nama token, tool, target, dan hasil.
+- MCP tidak pernah menyediakan kredensial tersimpan, pembuatan/pencabutan token MCP lain, atau perubahan password.
+- Batas laju default 60 permintaan per menit per token, dapat diubah di Pengaturan.
 
 ## Integrasi
 

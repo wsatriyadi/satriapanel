@@ -17,6 +17,8 @@ type AuditLog struct {
 	ObjectID   string `json:"objectId"`
 	Summary    string `json:"summary"`
 	IP         string `json:"ip"`
+	Source     string `json:"source"`
+	TokenName  string `json:"tokenName,omitempty"`
 	CreatedAt  string `json:"createdAt"`
 }
 
@@ -47,7 +49,7 @@ func (p *Panel) queryAudit(r *http.Request) ([]AuditLog, int) {
 	cond := strings.Join(where, " AND ")
 	var total int
 	_ = p.db.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE `+cond, args...).Scan(&total)
-	rows, err := p.db.Query(`SELECT id,actor,action,object_type,object_id,summary,ip,created_at FROM audit_logs WHERE `+cond+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+	rows, err := p.db.Query(`SELECT id,actor,action,object_type,object_id,summary,ip,source,token_name,created_at FROM audit_logs WHERE `+cond+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 		append(args, limit, offset)...)
 	if err != nil {
 		return []AuditLog{}, total
@@ -56,7 +58,7 @@ func (p *Panel) queryAudit(r *http.Request) ([]AuditLog, int) {
 	out := []AuditLog{}
 	for rows.Next() {
 		var a AuditLog
-		if rows.Scan(&a.ID, &a.Actor, &a.Action, &a.ObjectType, &a.ObjectID, &a.Summary, &a.IP, &a.CreatedAt) == nil {
+		if rows.Scan(&a.ID, &a.Actor, &a.Action, &a.ObjectType, &a.ObjectID, &a.Summary, &a.IP, &a.Source, &a.TokenName, &a.CreatedAt) == nil {
 			out = append(out, a)
 		}
 	}
@@ -73,9 +75,9 @@ func (p *Panel) handleAudit(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv")
 		w.Header().Set("Content-Disposition", `attachment; filename="satriapanel-audit.csv"`)
 		cw := csv.NewWriter(w)
-		_ = cw.Write([]string{"id", "waktu", "aktor", "aksi", "objek", "objek_id", "ringkasan", "ip"})
+		_ = cw.Write([]string{"id", "waktu", "aktor", "aksi", "objek", "objek_id", "ringkasan", "ip", "sumber", "token"})
 		for _, a := range logs {
-			_ = cw.Write([]string{strconv.FormatInt(a.ID, 10), a.CreatedAt, a.Actor, a.Action, a.ObjectType, a.ObjectID, a.Summary, a.IP})
+			_ = cw.Write([]string{strconv.FormatInt(a.ID, 10), a.CreatedAt, a.Actor, a.Action, a.ObjectType, a.ObjectID, a.Summary, a.IP, a.Source, a.TokenName})
 		}
 		cw.Flush()
 		p.audit("audit.export", "audit", "", "Audit log diekspor ke CSV")
