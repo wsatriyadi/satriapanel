@@ -599,9 +599,21 @@ func runCmd(ctx context.Context, command string, timeout time.Duration) error {
 }
 
 func runCmdOutput(ctx context.Context, command string, timeout time.Duration) (string, error) {
+	return runCmdOutputDir(ctx, "", command, timeout)
+}
+
+// runCmdOutputDir sama seperti runCmdOutput, tetapi perintah dijalankan dengan
+// cmd.Dir = dir bila dir tidak kosong. Wajib untuk perintah yang perilakunya
+// bergantung pada direktori kerja — misalnya `docker compose`, yang mencari
+// berkas compose dari cwd; tanpa ini compose gagal "no configuration file
+// provided" saat panel berjalan dari direktori lain.
+func runCmdOutputDir(ctx context.Context, dir, command string, timeout time.Duration) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := shellCommand(cctx, command)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	setProcAttr(cmd)
 	out, err := cmd.CombinedOutput()
 	if cctx.Err() == context.DeadlineExceeded {

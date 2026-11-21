@@ -285,7 +285,7 @@ func (m *processManager) startDockerApp(app *App) error {
 		if err == nil {
 			_ = writeEnvFile(envFile, env)
 		}
-		out, err := runCmdOutput(context.Background(), "docker compose -p "+shellQuote(name)+" up -d", 120*time.Second)
+		out, err := runCmdOutputDir(context.Background(), dir, "docker compose -p "+shellQuote(name)+" up -d", 120*time.Second)
 		if err != nil {
 			return fmt.Errorf("docker compose: %s", truncate(strings.TrimSpace(out), 300))
 		}
@@ -331,7 +331,7 @@ func (m *processManager) startDockerApp(app *App) error {
 func (m *processManager) stopDockerApp(app *App) {
 	name := "sp-" + app.Slug
 	if app.Mode == "compose" {
-		_, _ = runCmdOutput(context.Background(), "docker compose -p "+shellQuote(name)+" down", 90*time.Second)
+		_, _ = runCmdOutputDir(context.Background(), p_activeDir(app), "docker compose -p "+shellQuote(name)+" down", 90*time.Second)
 	} else {
 		_, _ = runCmdOutput(context.Background(), "docker rm -f "+shellQuote(name), 60*time.Second)
 	}
